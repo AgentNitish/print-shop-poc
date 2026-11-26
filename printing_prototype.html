@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Print Shop Drive Upload PoC</title>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 40px auto; padding: 0 16px; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 20px; }
+    button { background: #1a73e8; color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-size: 15px; }
+    button:disabled { background: #9bbef5; cursor: not-allowed; }
+    input[type="file"] { margin: 16px 0; display: block; }
+    #log { margin-top: 16px; font-size: 14px; white-space: pre-wrap; background: #f6f8fa; padding: 12px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Campus Print Upload (PoC)</h2>
+    <button id="authBtn">1. Sign in with Google</button>
+
+    <div id="uploadSection" style="display:none; margin-top: 20px;">
+      <input type="file" id="fileInput" />
+      <button id="uploadBtn">2. Upload & Share with Print Shop</button>
+    </div>
+
+    <div id="log">Waiting for sign-in...</div>
+  </div>
+
+  <script>
+    // === CONFIGURE THESE TWO VALUES ===
+    const CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com";
+    const SHOPKEEPER_EMAIL = "printshop.email@gmail.com";
+    // ==================================
+
+    const SCOPES = "https://www.googleapis.com/auth/drive.file";
+    let accessToken = null;
+    let tokenClient = null;
+
+    const logEl = document.getElementById("log");
+    const authBtn = document.getElementById("authBtn");
+    const uploadSection = document.getElementById("uploadSection");
+    const uploadBtn = document.getElementById("uploadBtn");
+    const fileInput = document.getElementById("fileInput");
+
+    function log(msg) {
+      logEl.textContent = msg;
+    }
+
+    // Initialize Google Identity Services when script loads
+    window.onload = () => {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: (tokenResponse) => {
+          if (tokenResponse.error) {
+            log("Auth Error: " + tokenResponse.error);
+            return;
+          }
+          accessToken = tokenResponse.access_token;
+          authBtn.style.display = "none";
+          uploadSection.style.display = "block";
+          log("Signed in! Select any file to upload.");
+        },
+      });
+    };
+
+    authBtn.onclick = () => {
+      tokenClient.requestAccessToken({ prompt: "consent" });
+    };
+
+    uploadBtn.onclick = async () => {
+      const file = fileInput.files[0];
+      if (!file) return log("Please select a file first.");
+
+      uploadBtn.disabled = true;
+      log(`Uploading "${file.name}" to your Google Drive...`);
+
+      try {
+        // 1. Upload file to the student's Google Drive
+        const metadata = {
+          name: file.name,
+          mimeType: file.type || "application/octet-stream",
+        };
+
+        const form = new FormData();
+        form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+        form.append("file", file);
+
+        const uploadRes = await fetch(
+          "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink",
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${accessToken}` },
+            body: form,
+          }
+        );
+
+        if (!uploadRes.ok) throw new Error(await uploadRes.text());
+        const uploadedFile = await uploadRes.json();
+
+        log(`Uploaded! Sharing read access with ${SHOPKEEPER_EMAIL}...`);
+
+        // 2. Grant read-only permission to the print shop (silently, no email spam)
+        const permRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${uploadedFile.id}/permissions?sendNotificationEmail=false`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              role: "reader",
+              type: "user",
+              emailAddress: SHOPKEEPER_EMAIL,
+            }),
+          }
+        );
+
+        if (!permRes.ok) throw new Error(await permRes.text());
+
+        // 3. Done! In your real app, you'd send `uploadedFile.webViewLink` + print specs to Firebase/Supabase
+        log(
+          `Success!\n\nFile ID: ${uploadedFile.id}\nDrive Link: ${uploadedFile.webViewLink}\n\n` +
+          `The print shop (${SHOPKEEPER_EMAIL}) can now open and print this file directly.`
+        );
+      } catch (err) {
+        log("Error:\n" + err.message);
+      } finally {
+        uploadBtn.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>
